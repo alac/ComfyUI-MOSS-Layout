@@ -1,7 +1,11 @@
 import { app } from "../../scripts/app.js";
 
 const CSS = `
-.moss-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(10,10,10,0.85); z-index: 9999; display: flex; font-family: sans-serif; color: #fff; }
+.moss-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(10,10,10,0.85); z-index: 9999; display: flex; flex-direction: column; font-family: sans-serif; color: #fff; }
+.moss-toolbar { display: flex; gap: 10px; background: #222; padding: 10px 20px; border-bottom: 1px solid #444; align-items: center; justify-content: space-between; }
+.moss-toolbar-group { display: flex; gap: 10px; align-items: center; }
+.moss-toolbar button { background: #333; color: white; border: 1px solid #555; padding: 6px 12px; cursor: pointer; border-radius: 4px; font-size: 13px; transition: 0.2s; }
+.moss-toolbar button:hover { background: #444; }
 .moss-canvas-area { flex: 1; display: flex; align-items: center; justify-content: center; padding: 40px; position: relative; }
 .moss-sidebar { width: 380px; background: #222; border-left: 1px solid #444; padding: 20px; display: flex; flex-direction: column; gap: 15px; overflow-y: auto; box-shadow: -5px 0 15px rgba(0,0,0,0.5); }
 .moss-sidebar input, .moss-sidebar textarea, .moss-sidebar select { width: 100%; background: #111; color: #fff; border: 1px solid #555; padding: 8px; border-radius: 4px; box-sizing: border-box; }
@@ -15,49 +19,38 @@ const CSS = `
 .moss-btn-danger { background: #cc2222 !important; border-color: #aa1111 !important; }
 .moss-btn-danger:hover { background: #ee3333 !important; }
 .moss-canvas { background: #111; border: 2px dashed #666; position: relative; box-shadow: 0 0 20px rgba(0,0,0,0.8); overflow: hidden; user-select: none; }
-
-/* In idle mode, canvas uses default cursor. In drawing mode, it uses crosshair */
 .moss-canvas { cursor: default; }
 .moss-canvas.is-drawing-mode { cursor: crosshair; border-color: #ffaa00; }
-
-/* Box Styles */
-.moss-box { 
-    position: absolute; border: 2px solid #00aaff; background: rgba(0, 170, 255, 0.2); 
-    cursor: move; display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-start; 
-    font-size: 12px; overflow: hidden; user-select: none; box-sizing: border-box; 
-    padding: 6px; color: #fff; text-shadow: 1px 1px 2px #000;
-}
+.moss-box { position: absolute; border: 2px solid #00aaff; background: rgba(0, 170, 255, 0.2); cursor: move; display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-start; font-size: 12px; overflow: hidden; user-select: none; box-sizing: border-box; padding: 6px; color: #fff; text-shadow: 1px 1px 2px #000; }
 .moss-box-selected { border-color: #ffaa00; background: rgba(255, 170, 0, 0.3); z-index: 10; }
-
-/* The magic trick: disable clicks on existing boxes when we want to draw over them */
 .is-drawing-mode .moss-box { pointer-events: none !important; }
-
 .moss-hint { position: absolute; top: 20px; left: 20px; background: rgba(0,0,0,0.7); padding: 10px; border-radius: 5px; pointer-events: none; }
 .moss-hint-active { background: rgba(255, 170, 0, 0.9); color: #000; font-weight: bold; text-shadow: none; }
-
-/* Floating Layer Selector HUD */
-.moss-layer-panel {
-    position: absolute; bottom: 20px; left: 20px;
-    background: rgba(20,20,20,0.95);
-    padding: 10px 15px; border-radius: 8px; border: 1px solid #444;
-    display: flex; align-items: center; gap: 10px;
-    z-index: 100; box-shadow: 0 5px 15px rgba(0,0,0,0.5);
-}
+.moss-layer-panel { position: absolute; bottom: 20px; left: 20px; background: rgba(20,20,20,0.95); padding: 10px 15px; border-radius: 8px; border: 1px solid #444; display: flex; align-items: center; gap: 10px; z-index: 100; box-shadow: 0 5px 15px rgba(0,0,0,0.5); }
 .moss-layer-panel label { font-weight: bold; font-size: 12px; color: #ccc; }
 .moss-layer-panel select { background: #111; color: #fff; border: 1px solid #555; padding: 6px; border-radius: 4px; width: 350px; outline: none; }
-.moss-layer-panel select:focus { border-color: #00aaff; }
-
 hr { border: none; border-top: 1px solid #444; margin: 5px 0; }
 `;
 
-function openMossEditor(node, layoutWidget) {
-    let state = { summary: { caption: "", meta: "", canvas: "single" }, items: [] };
+function migrateState(data) {
+    let res = { ...data };
+    if (!res.version) {
+        res.version = 1;
+        if (!res.summary) res.summary = { caption: "", meta: "", canvas: "single" };
+        if (!res.items) res.items = [];
+    }
+    return res;
+}
+
+function openMossEditor(node, layoutWidget, presetWidget) {
+    let state = { version: 1, summary: { caption: "", meta: "", canvas: "single" }, items: [] };
     try {
         if (layoutWidget.value && layoutWidget.value !== "{}") {
-            state = JSON.parse(layoutWidget.value);
+            state = migrateState(JSON.parse(layoutWidget.value));
         }
     } catch (e) { console.warn("MOSS-Image Layout Parse Error", e); }
 
+    let isDirty = false;
     let selectedIndex = -1;
     let mode = "idle"; 
     let dragStart = null;
@@ -79,52 +72,66 @@ function openMossEditor(node, layoutWidget) {
     overlay.className = "moss-overlay";
 
     overlay.innerHTML = `
-        <div class="moss-canvas-area">
-            <div class="moss-hint" id="moss-hint">Select a region to edit, or click "+ Add New Region"</div>
-            <div class="moss-canvas" id="moss-canvas"></div>
-            
-            <div class="moss-layer-panel">
-                <label>Select Region:</label>
-                <select id="moss-layer-select"></select>
+        <div class="moss-toolbar">
+            <div class="moss-toolbar-group">
+                <button id="moss-btn-import">📂 Import JSON</button>
+                <button id="moss-btn-export">💾 Export JSON</button>
+            </div>
+            <div class="moss-toolbar-group">
+                <span id="moss-preset-label" style="font-size: 14px; color: #aaa;">
+                    Preset: <strong style="color:white;">${presetWidget.value}</strong>
+                </span>
+                <button id="moss-btn-save-preset" style="background:#4b0082;">⭐ Save to Presets</button>
+                <button id="moss-btn-open-folder">📁 Open Presets Folder</button>
             </div>
         </div>
-        <div class="moss-sidebar" id="moss-sidebar">
-            <button id="moss-btn-add" class="moss-btn-success" style="padding: 12px; font-weight: bold; font-size: 14px;">+ Add New Region</button>
-            <hr/>
-            <h3>Scene Summary</h3>
-            <label>Caption (Global Prompt)</label>
-            <textarea id="moss-summary-caption">${state.summary.caption || ""}</textarea>
-            <label>Meta Tags (comma separated)</label>
-            <input type="text" id="moss-summary-meta" value="${state.summary.meta || ""}" placeholder="e.g. poster, minimalist" />
-            
-            <hr/>
-            <h3>Selected Region</h3>
-            <div id="moss-item-props" style="display:none; flex-direction:column; gap:10px;">
-                <label>Label</label>
-                <select id="moss-item-label">
-                    <option value="object">object</option>
-                    <option value="text">text</option>
-                    <option value="person">person</option>
-                    <option value="background">background</option>
-                </select>
-                <label>Caption / Description</label>
-                <textarea id="moss-item-caption"></textarea>
-                <div id="moss-text-container" style="display:none; flex-direction:column; gap:5px;">
-                    <label>Text Content</label>
-                    <input type="text" id="moss-item-text" />
-                </div>
-                <div style="display:flex; gap:10px; margin-top:10px;">
-                    <button id="moss-btn-redraw" style="flex:1;">Redraw Box</button>
-                    <button id="moss-btn-delete" class="moss-btn-danger" style="flex:1;">Delete</button>
+        <div style="display: flex; flex: 1; overflow: hidden;">
+            <div class="moss-canvas-area">
+                <div class="moss-hint" id="moss-hint">Select a region to edit, or click "+ Add New Region"</div>
+                <div class="moss-canvas" id="moss-canvas"></div>
+                <div class="moss-layer-panel">
+                    <label>Select Region:</label>
+                    <select id="moss-layer-select"></select>
                 </div>
             </div>
-            <div id="moss-no-selection" style="color:#aaa; font-style:italic;">No region selected.</div>
-            
-            <div style="flex:1;"></div>
-            <hr/>
-            <div style="display:flex; gap:10px;">
-                <button id="moss-btn-cancel" style="flex:1;">Cancel</button>
-                <button id="moss-btn-save" class="moss-btn-primary" style="flex:1;">Save Layout</button>
+            <div class="moss-sidebar" id="moss-sidebar">
+                <button id="moss-btn-add" class="moss-btn-success" style="padding: 12px; font-weight: bold; font-size: 14px;">+ Add New Region</button>
+                <hr/>
+                <h3>Scene Summary</h3>
+                <label>Caption (Global Prompt)</label>
+                <textarea id="moss-summary-caption">${state.summary.caption || ""}</textarea>
+                <label>Meta Tags (comma separated)</label>
+                <input type="text" id="moss-summary-meta" value="${state.summary.meta || ""}" placeholder="e.g. poster, minimalist" />
+                
+                <hr/>
+                <h3>Selected Region</h3>
+                <div id="moss-item-props" style="display:none; flex-direction:column; gap:10px;">
+                    <label>Label</label>
+                    <select id="moss-item-label">
+                        <option value="object">object</option>
+                        <option value="text">text</option>
+                        <option value="person">person</option>
+                        <option value="background">background</option>
+                    </select>
+                    <label>Caption / Description</label>
+                    <textarea id="moss-item-caption"></textarea>
+                    <div id="moss-text-container" style="display:none; flex-direction:column; gap:5px;">
+                        <label>Text Content</label>
+                        <input type="text" id="moss-item-text" />
+                    </div>
+                    <div style="display:flex; gap:10px; margin-top:10px;">
+                        <button id="moss-btn-redraw" style="flex:1;">Redraw Box</button>
+                        <button id="moss-btn-delete" class="moss-btn-danger" style="flex:1;">Delete</button>
+                    </div>
+                </div>
+                <div id="moss-no-selection" style="color:#aaa; font-style:italic;">No region selected.</div>
+                
+                <div style="flex:1;"></div>
+                <hr/>
+                <div style="display:flex; gap:10px;">
+                    <button id="moss-btn-cancel" style="flex:1;">Cancel</button>
+                    <button id="moss-btn-save" class="moss-btn-primary" style="flex:1;">Save Node Layout</button>
+                </div>
             </div>
         </div>
     `;
@@ -139,6 +146,14 @@ function openMossEditor(node, layoutWidget) {
     const textContainer = document.getElementById("moss-text-container");
     const elText = document.getElementById("moss-item-text");
     const layerSelect = document.getElementById("moss-layer-select");
+    const presetLabel = document.getElementById("moss-preset-label");
+
+    function markDirty() {
+        if (!isDirty) {
+            isDirty = true;
+            presetLabel.innerHTML = `Preset: <strong style="color:#ffaa00;">Custom (modified)</strong>`;
+        }
+    }
 
     function resizeCanvas() {
         const areaRect = overlay.querySelector(".moss-canvas-area").getBoundingClientRect();
@@ -154,14 +169,9 @@ function openMossEditor(node, layoutWidget) {
 
     function render() {
         canvas.innerHTML = "";
-        
-        // Manage canvas state classes and hints
         const isDrawing = mode.includes("drawing") || mode.includes("redrawing");
-        if (isDrawing) {
-            canvas.classList.add("is-drawing-mode");
-        } else {
-            canvas.classList.remove("is-drawing-mode");
-        }
+        if (isDrawing) canvas.classList.add("is-drawing-mode");
+        else canvas.classList.remove("is-drawing-mode");
 
         if (mode === "drawing_standby" || mode === "drawing") {
             hintText.textContent = "Draw Mode: Click & Drag anywhere to draw a new region (Press ESC to cancel)";
@@ -174,18 +184,14 @@ function openMossEditor(node, layoutWidget) {
             hintText.className = "moss-hint";
         }
         
-        // Update Bottom-Left Dropdown Select Options
         layerSelect.innerHTML = "";
         layerSelect.appendChild(new Option("-- None Selected --", "-1"));
         
-        // Draw boxes & populate dropdown
         state.items.forEach((item, index) => {
-            // 1. Populate Dropdown list
             let desc = item.caption || item.text || `Region ${index + 1}`;
             if (desc.length > 90) desc = desc.substring(0, 90) + "...";
             layerSelect.appendChild(new Option(`[${item.label}] ${desc}`, index));
 
-            // 2. Render Box on Canvas
             const box = document.createElement("div");
             box.className = "moss-box" + (index === selectedIndex ? " moss-box-selected" : "");
             const [ymin, xmin, ymax, xmax] = item.norm_bbox;
@@ -194,7 +200,6 @@ function openMossEditor(node, layoutWidget) {
             box.style.width = ((xmax - xmin) * 100) + "%";
             box.style.height = ((ymax - ymin) * 100) + "%";
             
-            // Format Box HTML to show details
             let boxHtml = `<div><strong>[${item.label}]</strong>`;
             if (item.text) boxHtml += ` <span style="color:#ffd700;">"${item.text}"</span>`;
             boxHtml += `</div>`;
@@ -203,10 +208,8 @@ function openMossEditor(node, layoutWidget) {
             }
             box.innerHTML = boxHtml;
             
-            // Box Click/Drag
             box.addEventListener("mousedown", (e) => {
                 if (mode.includes("standby") || mode.includes("drawing") || mode.includes("redrawing")) return;
-                
                 e.stopPropagation(); 
                 mode = "dragging";
                 selectedIndex = index;
@@ -217,10 +220,8 @@ function openMossEditor(node, layoutWidget) {
             canvas.appendChild(box);
         });
 
-        // Sync Select Dropdown Value
         layerSelect.value = selectedIndex.toString();
 
-        // Update Sidebar
         if (selectedIndex >= 0 && state.items[selectedIndex]) {
             propsPanel.style.display = "flex";
             noSelPanel.style.display = "none";
@@ -239,29 +240,110 @@ function openMossEditor(node, layoutWidget) {
         }
     }
 
-    // Dropdown change listener
+    // --- Toolbar Actions ---
+    document.getElementById("moss-btn-export").addEventListener("click", () => {
+        const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(state, null, 2));
+        const dlAnchorElem = document.createElement('a');
+        dlAnchorElem.setAttribute("href", dataStr);
+        let pName = presetWidget.value !== "Custom" ? presetWidget.value.replace('.json', '') : "moss_layout";
+        dlAnchorElem.setAttribute("download", pName + ".json");
+        document.body.appendChild(dlAnchorElem);
+        dlAnchorElem.click();
+        dlAnchorElem.remove();
+    });
+
+    document.getElementById("moss-btn-import").addEventListener("click", () => {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = ".json";
+        input.onchange = e => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = ev => {
+                try {
+                    const imported = JSON.parse(ev.target.result);
+                    state = migrateState(imported);
+                    markDirty();
+                    render();
+                } catch (err) { alert("Invalid JSON file format."); }
+            };
+            reader.readAsText(file);
+        };
+        input.click();
+    });
+
+    document.getElementById("moss-btn-save-preset").addEventListener("click", async () => {
+        let defaultName = presetWidget.value !== "Custom" ? presetWidget.value.replace(".json", "") : "";
+        let name = prompt("Enter a name for this preset:", defaultName);
+        if (!name) return;
+        
+        async function save(overwrite) {
+            try {
+                // Ensure state takes any un-rendered text values
+                state.summary.caption = document.getElementById("moss-summary-caption").value;
+                state.summary.meta = document.getElementById("moss-summary-meta").value;
+                
+                const res = await fetch("/moss/save_preset", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ name, data: state, overwrite })
+                });
+                const result = await res.json();
+                
+                if (result.error === "exists") {
+                    if (confirm(`A preset named "${name}" already exists. Overwrite?`)) {
+                        await save(true);
+                    }
+                } else if (result.success) {
+                    const finalName = result.name;
+                    if (!presetWidget.options.values.includes(finalName)) {
+                        presetWidget.options.values.push(finalName);
+                    }
+                    presetWidget.value = finalName;
+                    isDirty = false;
+                    presetLabel.innerHTML = `Preset: <strong style="color:white;">${finalName}</strong>`;
+                    alert("Preset saved successfully!");
+                } else {
+                    alert("Error saving preset.");
+                }
+            } catch (e) { alert("Network error saving preset."); }
+        }
+        save(false);
+    });
+
+    document.getElementById("moss-btn-open-folder").addEventListener("click", async () => {
+        try {
+            const res = await fetch("/moss/open_presets_folder", { method: "POST" });
+            const result = await res.json();
+            if (!result.success) {
+                prompt("Could not open folder automatically. Directory path:", result.path);
+            }
+        } catch(e) { console.error(e); }
+    });
+
+    // --- Sidebar Edit Listeners ---
+    document.getElementById("moss-summary-caption").addEventListener("input", markDirty);
+    document.getElementById("moss-summary-meta").addEventListener("input", markDirty);
+    
+    document.getElementById("moss-btn-add").addEventListener("click", () => {
+        mode = "drawing_standby"; selectedIndex = -1; render();
+    });
+
     layerSelect.addEventListener("change", (e) => {
         selectedIndex = parseInt(e.target.value);
-        if (mode === "drawing_standby" || mode === "redrawing_standby") {
-            mode = "idle";
-        }
+        if (mode === "drawing_standby" || mode === "redrawing_standby") mode = "idle";
         render();
     });
 
-    // Sidebar Event Listeners
-    document.getElementById("moss-btn-add").addEventListener("click", () => {
-        mode = "drawing_standby";
-        selectedIndex = -1;
-        render();
-    });
-
-    elLabel.addEventListener("change", (e) => { state.items[selectedIndex].label = e.target.value; render(); });
-    elCaption.addEventListener("input", (e) => { state.items[selectedIndex].caption = e.target.value; render(); });
-    elText.addEventListener("input", (e) => { state.items[selectedIndex].text = e.target.value; render(); });
+    elLabel.addEventListener("change", (e) => { state.items[selectedIndex].label = e.target.value; markDirty(); render(); });
+    elCaption.addEventListener("input", (e) => { state.items[selectedIndex].caption = e.target.value; markDirty(); render(); });
+    elText.addEventListener("input", (e) => { state.items[selectedIndex].text = e.target.value; markDirty(); render(); });
 
     document.getElementById("moss-btn-delete").addEventListener("click", () => {
         state.items.splice(selectedIndex, 1);
         selectedIndex = -1;
+        markDirty();
         render();
     });
 
@@ -270,26 +352,20 @@ function openMossEditor(node, layoutWidget) {
         render();
     });
 
-    // Canvas Interactions (Drawing / Dragging)
+    // --- Canvas Drawing/Dragging ---
     let tempBox = null;
-    
     canvas.addEventListener("mousedown", (e) => {
         if (mode === "dragging") return;
-        
-        // Start a draw ONLY if we clicked "Add New" or "Redraw"
         if (mode === "drawing_standby" || mode === "redrawing_standby") {
             const rect = canvas.getBoundingClientRect();
             dragStart = { x: (e.clientX - rect.left) / rect.width, y: (e.clientY - rect.top) / rect.height };
-            
             if (mode === "drawing_standby") mode = "drawing";
             if (mode === "redrawing_standby") mode = "redrawing";
-            
             tempBox = document.createElement("div");
             tempBox.className = "moss-box moss-box-selected";
-            tempBox.style.pointerEvents = "none"; // Make sure it doesn't intercept mouseup
+            tempBox.style.pointerEvents = "none";
             canvas.appendChild(tempBox);
         } else if (mode === "idle") {
-            // Clicking empty canvas in idle mode simply deselects
             selectedIndex = -1;
             render();
         }
@@ -300,18 +376,14 @@ function openMossEditor(node, layoutWidget) {
         if ((mode === "drawing" || mode === "redrawing") && tempBox) {
             let currentX = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
             let currentY = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
-            
-            let xmin = Math.min(dragStart.x, currentX);
-            let xmax = Math.max(dragStart.x, currentX);
-            let ymin = Math.min(dragStart.y, currentY);
-            let ymax = Math.max(dragStart.y, currentY);
+            let xmin = Math.min(dragStart.x, currentX), xmax = Math.max(dragStart.x, currentX);
+            let ymin = Math.min(dragStart.y, currentY), ymax = Math.max(dragStart.y, currentY);
             
             tempBox.style.left = (xmin * 100) + "%";
             tempBox.style.top = (ymin * 100) + "%";
             tempBox.style.width = ((xmax - xmin) * 100) + "%";
             tempBox.style.height = ((ymax - ymin) * 100) + "%";
-        }
-        else if (mode === "dragging" && selectedIndex >= 0) {
+        } else if (mode === "dragging" && selectedIndex >= 0) {
             let dx = (e.clientX - dragStart.x) / rect.width;
             let dy = (e.clientY - dragStart.y) / rect.height;
             let [ymin, xmin, ymax, xmax] = dragBoxInitial;
@@ -332,10 +404,8 @@ function openMossEditor(node, layoutWidget) {
             let endX = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
             let endY = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
             
-            let xmin = Math.min(dragStart.x, endX);
-            let xmax = Math.max(dragStart.x, endX);
-            let ymin = Math.min(dragStart.y, endY);
-            let ymax = Math.max(dragStart.y, endY);
+            let xmin = Math.min(dragStart.x, endX), xmax = Math.max(dragStart.x, endX);
+            let ymin = Math.min(dragStart.y, endY), ymax = Math.max(dragStart.y, endY);
 
             if (xmax - xmin > 0.02 && ymax - ymin > 0.02) {
                 if (mode === "drawing") {
@@ -345,9 +415,13 @@ function openMossEditor(node, layoutWidget) {
                 } else if (mode === "redrawing") {
                     state.items[selectedIndex].norm_bbox = [ymin, xmin, ymax, xmax];
                 }
+                markDirty();
             }
             if (tempBox) tempBox.remove();
             tempBox = null;
+        } else if (mode === "dragging") {
+            // Because drag positions change, we mark dirty when drag completes
+            markDirty();
         }
         
         mode = "idle";
@@ -355,7 +429,7 @@ function openMossEditor(node, layoutWidget) {
         render();
     });
 
-    // Handle Escape Key to Cancel Drawing
+    // --- Cleanup & Node Sync ---
     const onKeyDown = (e) => {
         if (e.key === "Escape") {
             if (mode !== "idle") {
@@ -381,7 +455,14 @@ function openMossEditor(node, layoutWidget) {
     document.getElementById("moss-btn-save").addEventListener("click", () => {
         state.summary.caption = document.getElementById("moss-summary-caption").value;
         state.summary.meta = document.getElementById("moss-summary-meta").value;
+        
+        // Sync final JSON back to ComfyUI node string widget
         layoutWidget.value = JSON.stringify(state);
+        
+        // If modified since last load/save, enforce "Custom" on the node
+        if (isDirty) {
+            presetWidget.value = "Custom";
+        }
         cleanup();
     });
 
@@ -400,13 +481,33 @@ app.registerExtension({
                 if (layoutWidget) {
                     layoutWidget.type = "hidden";
                     layoutWidget.computeSize = () => [0, -4];
-                    if (layoutWidget.inputEl) {
-                        layoutWidget.inputEl.style.display = "none";
-                    }
+                    if (layoutWidget.inputEl) layoutWidget.inputEl.style.display = "none";
+                }
+
+                const presetWidget = this.widgets.find(w => w.name === "preset");
+                if (presetWidget) {
+                    // Update dropdown values directly from backend in case another tab created a preset
+                    fetch("/moss/list_presets")
+                        .then(res => res.json())
+                        .then(files => { presetWidget.options.values = ["Custom", ...files]; });
+
+                    // Hook Dropdown Event: When user selects a preset on the Graph, instantly load the JSON
+                    presetWidget.callback = async (val) => {
+                        if (val !== "Custom") {
+                            try {
+                                const res = await fetch("/moss/get_preset?name=" + encodeURIComponent(val));
+                                if (res.ok) {
+                                    const data = await res.json();
+                                    // Update the hidden layout string seamlessly
+                                    if (layoutWidget) layoutWidget.value = JSON.stringify(data);
+                                }
+                            } catch(e) { console.error("Error loading MOSS preset", e); }
+                        }
+                    };
                 }
 
                 this.addWidget("button", "Edit Layout", "Edit", () => {
-                    openMossEditor(this, layoutWidget);
+                    openMossEditor(this, layoutWidget, presetWidget);
                 });
 
                 requestAnimationFrame(() => {

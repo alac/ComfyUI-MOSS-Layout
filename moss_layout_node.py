@@ -1,5 +1,74 @@
 import math
 import json
+import os
+import sys
+import subprocess
+import server
+from aiohttp import web
+
+# Create presets directory relative to this python file
+PRESETS_DIR = os.path.join(os.path.dirname(__file__), "presets")
+os.makedirs(PRESETS_DIR, exist_ok=True)
+
+# -------------------------------------------------------------
+# BACKEND API ROUTES FOR PRESET MANAGEMENT
+# -------------------------------------------------------------
+@server.PromptServer.instance.routes.get("/moss/list_presets")
+async def list_presets(request):
+    files = [f for f in os.listdir(PRESETS_DIR) if f.endswith('.json')]
+    return web.json_response(files)
+
+@server.PromptServer.instance.routes.get("/moss/get_preset")
+async def get_preset(request):
+    name = request.rel_url.query.get("name", "")
+    name = "".join(c for c in name if c.isalnum() or c in " ._-") # Sanitize
+    path = os.path.join(PRESETS_DIR, name)
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return web.json_response(json.load(f))
+    return web.Response(status=404)
+
+@server.PromptServer.instance.routes.post("/moss/save_preset")
+async def save_preset(request):
+    data = await request.json()
+    name = data.get("name", "")
+    overwrite = data.get("overwrite", False)
+    content = data.get("data", {})
+    
+    name = "".join(c for c in name if c.isalnum() or c in " ._-") # Sanitize
+    if not name.endswith(".json"):
+        name += ".json"
+        
+    path = os.path.join(PRESETS_DIR, name)
+    if os.path.exists(path) and not overwrite:
+        return web.json_response({"error": "exists", "message": f"{name} already exists."})
+        
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(content, f, indent=2)
+    return web.json_response({"success": True, "name": name})
+
+@server.PromptServer.instance.routes.post("/moss/open_presets_folder")
+async def open_folder(request):
+    try:
+        if sys.platform == "win32":
+            os.startfile(PRESETS_DIR)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", PRESETS_DIR])
+        else:
+            subprocess.Popen(["xdg-open", PRESETS_DIR])
+        return web.json_response({"success": True})
+    except Exception as e:
+        return web.json_response({"success": False, "path": PRESETS_DIR, "error": str(e)})
+
+
+# -------------------------------------------------------------
+# NODE DEFINITION
+# -------------------------------------------------------------
+def get_preset_list():
+    if not os.path.exists(PRESETS_DIR):
+        return ["Custom"]
+    files = [f for f in os.listdir(PRESETS_DIR) if f.endswith('.json')]
+    return ["Custom"] + sorted(files)
 
 class MOSSLayoutGenerator:
     @classmethod
@@ -8,8 +77,9 @@ class MOSSLayoutGenerator:
             "required": {
                 "area": (["0.5 MP", "1.0 MP", "1.5 MP", "2.0 MP"], {"default": "1.0 MP"}),
                 "aspect_ratio": (["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"], {"default": "1:1"}),
-                # This string holds the internal editor state. It will be hidden by our JavaScript.
-                "layout_data": ("STRING", {"default": "{}"}),
+                "preset": (get_preset_list(),),
+                # Hidden internal state tracking (now starts with version 1)
+                "layout_data": ("STRING", {"default": '{"version": 1, "summary": {}, "items": []}'}),
             }
         }
 
@@ -18,8 +88,7 @@ class MOSSLayoutGenerator:
     FUNCTION = "generate_layout"
     CATEGORY = "MOSS-Image"
 
-    def generate_layout(self, area, aspect_ratio, layout_data):
-        # 1. Calculate Dimensions (snapped to 16)
+    def generate_layout(self, area, aspect_ratio, preset, layout_data):
         area_map = {
             "0.5 MP": 512 * 512,
             "1.0 MP": 1024 * 1024,
@@ -27,22 +96,18 @@ class MOSSLayoutGenerator:
             "2.0 MP": 1024 * 1024 * 2
         }
         target_pixels = area_map.get(area, 1024 * 1024)
-        
         w_ratio, h_ratio = map(float, aspect_ratio.split(":"))
         r = w_ratio / h_ratio
         
-        # H_raw = sqrt(Area / r), W_raw = H_raw * r
         H_raw = math.sqrt(target_pixels / r)
         H = int(round(H_raw / 16.0) * 16)
         W = int(round((H * r) / 16.0) * 16)
 
-        # 2. Parse Layout Data
         try:
             data = json.loads(layout_data)
         except json.JSONDecodeError:
             data = {"summary": {"caption": "", "meta": "", "canvas": "single"}, "items": []}
 
-        # 3. Format Summary
         summary = data.get("summary", {})
         meta_raw = summary.get("meta", "")
         meta_list = [m.strip() for m in meta_raw.split(",") if m.strip()] if isinstance(meta_raw, str) else meta_raw
@@ -53,15 +118,12 @@ class MOSSLayoutGenerator:
             "caption": summary.get("caption", "")
         }
 
-        # 4. Process Items (Convert normalized coords to abs_centralized)
         out_items = []
         for item in data.get("items", []):
             if "norm_bbox" not in item:
                 continue
                 
-            # norm_bbox is [ymin, xmin, ymax, xmax] in 0.0 - 1.0 range
             ymin, xmin, ymax, xmax = item["norm_bbox"]
-            
             abs_xmin = int(round(xmin * W - W / 2))
             abs_xmax = int(round(xmax * W - W / 2))
             abs_ymin = int(round(ymin * H - H / 2))
@@ -77,7 +139,6 @@ class MOSSLayoutGenerator:
                 
             out_items.append(new_item)
 
-        # 5. Compile Final JSON
         final_json = {
             "summary": final_summary,
             "items": out_items,
